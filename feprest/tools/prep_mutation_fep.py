@@ -173,11 +173,7 @@ class DefaultProteinMutationGenerator:
                     return # already done
                 else:
                     print(f"Directory {ddir} has been generated successfully in the previous run, but base PDB's access time was newer, thus we restart the structure/topoology generation")
-        if mutations == []:
-            # wild-type, just copy
-            self.generate_wt(self.pdb, f"{ddir}/completed.pdb")
-        else:
-            self.generate_mutant(basepdbinfo, ddir, mutations)
+        self.generate_mutant(basepdbinfo, ddir, mutations)
 
         curdir = os.getcwd()
         os.chdir(ddir)
@@ -249,6 +245,7 @@ class DefaultProteinMutationGenerator:
                 raise RuntimeError(f"Not all mutations are consumed, requested mutations: {mutations}")
 
         check_call_verbose([self.faspr, "-i", self.pdb, "-o", f"{ddir}/completed.pdb", "-s", f"{ddir}/seq.txt"])
+        # check_call_verbose(["pdb2pqr", "--ff=AMBER", "--ffout=AMBER", "--with-ph=7.4", "--keep-chain", "--pdb-output", f"{ddir}/completed.pdb", f"{ddir}/completed_pre.pdb", f"{ddir}/completed.pqr"])
         # faspr often returns 0 even if there is an error
         if not os.path.exists(f"{ddir}/completed.pdb") or \
                 os.path.getmtime(f"{ddir}/completed.pdb") < os.path.getmtime(f"{ddir}/seq.txt"):
@@ -348,7 +345,7 @@ class DefaultProteinMutationGenerator:
             self.generate_gmx(basepdbinfo, dirname, mutation_list)
             fepdir.append(dirname)
             mutation_lists.append(mutation_list)
-        
+
         mutation_list_diff = list(set(mutation_lists[1]) - set(mutation_lists[0]))
         inv_mutation_list = list(set(mutation_lists[0]) - set(mutation_lists[1]))
         if inv_mutation_list != []:
@@ -376,10 +373,11 @@ class DefaultProteinMutationGenerator:
         self.generate_para_conf(mutation_list_diff)
         log_with_color(f"cd ..")
         os.chdir(curdir)
-
         # Do the same for the reference systems
         for refdir, m in zip(refdirs, mutation_list_diff):
             # FIXME: we currently do not consider the case that mutations are continuous like 25A_26A
+            other_resids = [mx.resid for mx in mutation_list_diff if mx.resid != m.resid]
+            print("other_resids", other_resids, [m.resid for m in mutation_list_diff])
             log_with_color(f"mkdir {refdir}")
             os.makedirs(refdir, exist_ok=True)
             log_with_color(f"cd {refdir}")
@@ -388,12 +386,13 @@ class DefaultProteinMutationGenerator:
                 # use local force field file
                 log_with_color(f"ln -s ../{self.ff}.ff {self.ff}.ff")
                 os.symlink(f"../{self.ff}.ff", f"{self.ff}.ff")
-            check_call_verbose([self.python3, f"{self.fepsuite}/feprest/tools/selectres.py"] + f"../{fepdirname}/fepbase.top ../{fepdirname}/fepbase.pdb {m.resid} fepbase.top fepbase.pdb".split())
+            other_resids_str = ','.join([str(r) for r in other_resids])
+            check_call_verbose([self.python3, f"{self.fepsuite}/feprest/tools/selectres.py"] + f"../{fepdirname}/fepbase.top ../{fepdirname}/fepbase.pdb {m.resid} fepbase.top fepbase.pdb {other_resids_str}".split())
             self.solvate_curdir_conf_topology(self.solv_ref)
             self.generate_para_conf([m])
             log_with_color(f"cd ..")
             os.chdir(curdir)
-        
+
         return fepdirname, refdirs
 
 class ArgumentDefaultsHelpFormatterWithRawFormatter(argparse.ArgumentDefaultsHelpFormatter):
@@ -402,7 +401,7 @@ class ArgumentDefaultsHelpFormatterWithRawFormatter(argparse.ArgumentDefaultsHel
 
 def argparse_options():
     parser = argparse.ArgumentParser(description="""Automatic mutation introduction and calculation preparation
-    
+
     The mutation information in --mutation accepts following formats:
     22V      Change 22 to Val
     A22V     Check 22 is Ala and change that to Val
@@ -419,7 +418,7 @@ def argparse_options():
     parser.add_argument("--faspr", required=True, help="Location of FASPR binary")
     parser.add_argument("--fepsuite", default=os.path.realpath(fepsuitepath), help="Path to fepsuite directory")
     parser.add_argument("--python3", default=sys.executable, help="Path to python3")
-    
+
     parser.add_argument("--pdb", required=True, help="Input PDB file")
     parser.add_argument("--base-mutation", default="", help="Mutation string for base mutation, default=\"\" (wild-type)")
     parser.add_argument("--mutation", required=True, help="Mutation string")

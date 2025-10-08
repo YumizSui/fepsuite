@@ -65,13 +65,13 @@ mdrun_find_possible_np() {
             # fail to run. Check log file to see whether it is domain decomposition problem
             domain_error=0
             for d in $multidir; do
-                if tail -20 $log_basename.log | grep -q -i "\\(domain\\|prime\\)"; then
+                if tail -20 "$d/$log_basename.log" | grep -qi -e domain -e prime; then
                     domain_error=1
                 fi
             done
-            if (( domain_error = 0 )); then
+            if (( domain_error == 0 )); then
                 echo "Error: domain-unrelated error"
-                exit $ERRORCODE 
+                exit $ERRORCODE
             fi
             PREVNP=$NP
             # round up
@@ -120,7 +120,8 @@ wait_if_needed ()
         for i in {0..$((NREP - 1))}; do
             mrundir=$workdir/rep$i
             if [[ ! -e $mrundir/$logfile ]] || [[ $(tail -1 $mrundir/$logfile) != Exit_success ]]; then
-                echo $4 1>&2
+                # echo $4 1>&2
+                echo "$errmsg" 1>&2
                 false    # set -x fails here
             fi
         done
@@ -182,7 +183,7 @@ main() {
             # NPT run (10 ns)
             cp mdp/nptinit.mdp $ID/nptA.mdp
             job_singlerun $GMX grompp -f $ID/nptA.mdp -c $ID/nvtA.gro -p $ID/heavy.top -o $ID/nptA -po $ID/nptA.mdout -maxwarn $((BASEWARN+1)) -pp $ID/fep_pp.top $REFCMD
-            mdrun_find_possible_np 1 -deffnm $ID/nptA 
+            mdrun_find_possible_np 1 -deffnm $ID/nptA
             ;;
         query,4)
             echo "DEPENDS=(3); (( PPM = PARA )); MULTI=1"
@@ -205,7 +206,7 @@ main() {
             $PYTHON3 $FEPREST_ROOT/rest2py/replica_optimizer.py update-topology $top $ID/gentops/fep_%d.top --basedir $ID --temp $REST2_TEMP
             ln -s $FEPREST/itp_addenda/*.itp $ID || true
             # this is a hack to enable #include "foo.itp" or "../foo.itp" in the top file. FIXME: how to deal with this?
-            ln -s $PWD/$ID/*.itp gentops || true 
+            ln -s $PWD/$ID/*.itp gentops || true
             ln -s $PWD/*.itp $ID || true
             for i in {0..$((NREP - 1))}; do
                 work=$ID/min$i
@@ -246,7 +247,7 @@ main() {
                     reps+=$mrundir
                     $PYTHON3 $FEPREST_ROOT/recover-water.py -p $work/fep_$i.top -o $work/fep_tip3p_${i}_light.top --ff $FF
                     $PYTHON3 $FEPREST_ROOT/turn-heavy.py -p $work/fep_tip3p_${i}_light.top -o $work/fep_tip3p_$i.top
-                    { echo "energygrps = hot"; echo "userint1 = 1" } >> $work/nvt${p}_$i.mdp 
+                    { echo "energygrps = hot"; echo "userint1 = 1" } >> $work/nvt${p}_$i.mdp
                     parallelizable_singlerun $mrundir/grompp.log $GMX grompp -f $work/nvt${p}_$i.mdp -c ${prevgro[$((i+1))]} -p $work/fep_tip3p_$i.top -o $mrundir/nvt -po $mrundir/nvt.mdout -maxwarn $((BASEWARN+1)) $REFCMD -n $ID/for_rest.ndx
                 done
                 wait_if_needed $work grompp.log "Error: failed to grompp on tuning cycle $p replica $i"
@@ -330,7 +331,7 @@ main() {
                 mkdir -p $ID/checkpoint_7/$d || true
                 cp $d/prodrun.cpt $ID/checkpoint_7/$d
                 cp $d/prodrun.tpr $d/prodrun_ph0.tpr
-            done 
+            done
             ;;
         # step 999: for analysis
         query,999)

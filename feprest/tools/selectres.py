@@ -3,7 +3,13 @@ import os
 
 # FIXME: I know this script's quality is abysmal and needs updating
 
-[_, topfrom, pdbfrom, targetresid, topto, pdbto] = sys.argv
+[_, topfrom, pdbfrom, targetresid, topto, pdbto] = sys.argv[:6]
+if len(sys.argv) > 6:
+    otherresids = sys.argv[6]
+else:
+    otherresids = ""
+otherresids = otherresids.split(",")
+otherresids = [int(r) for r in otherresids] if otherresids != "" else []
 targetresid = int(targetresid)
 targetresids = [targetresid-1, targetresid, targetresid+1] # FIXME: when mutation resides at the termini this is apparently wrong. The current workaround is to make residue number gapped.
 
@@ -52,7 +58,7 @@ with open(topfrom) as fh, open(topto, "w") as ofh:
             for i, j, converter in [(1, 8, str), (6, 9, float), (7, 10, float)]:
                 if converter(ls[i]) != converter(ls[j]):
                     perturbed = True
-            if perturbed and resid != targetresid:
+            if perturbed and resid != targetresid and resid not in otherresids:
                 message = f"""Residue {resid}-{ls[3]} atom {atomid} name {ls[4]} is perturbed but this residue is not the target of mutation.
 This is presumably error, and this is likely to happen when His resiudes have different states before and after the mutation and subsequent structure optimization.
 If you want to proceed, change all His residues in your system into appropriate names (HID/HIE for amber and HSD/HSE for charmm) to forcefully fix the protonation state."""
