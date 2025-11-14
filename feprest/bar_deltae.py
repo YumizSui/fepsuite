@@ -13,7 +13,7 @@ SimEval = collections.namedtuple("SimEval", ["sim", "eval"])
 
 # in kJ/mol/K (to fit GROMACSy output)
 gasconstant = 0.008314472
-# in kcal/mol/K 
+# in kcal/mol/K
 gasconstant_kcal = 0.0019872036
 
 
@@ -40,34 +40,86 @@ def parse_args():
 
 floatpat = r'[+-]?(?:\d+(\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?'
 
-def parse_deltae(fs, subsample, simindex):
-    data = []
-    tprev = -1
-    times = []
+import re
+from math import isclose
+
+def parse_deltae(fs, subsample):
+    TIME_PAT_SAFE = re.compile(r'\d+\.\d{6}(?=\s|$)')
+    ROLLBACK_PAT  = re.compile(r'100\.\d{6}(?=\s|$)')
+    all_data = []
     for f in fs:
+        file_data = []
+        tprev = -1.0
         with open(f) as fh:
             samplecount = 0
-            for l in fh:
-                if len(l) == 0:
+            for raw in fh:
+                if not raw or raw[0] in ['#', '@']:
                     continue
-                if l[-1] != "\n":
-                    # typically broken file
-                    break
-                if l[0] in ['#', '@']:
-                    pass
-                else:
-                    ls = l.split()
-                    tt = float(ls[0])
-                    if tprev >= tt:
-                        # prevent double counting
+                line = raw.rstrip("\n")
+
+                def try_parse(s):
+                    parts = s.split()
+                    if len(parts) < 3:
+                        return None
+                    try:
+                        tt = float(parts[0])
+                    except Exception:
+                        return None
+                    rest = parts[1:]
+                    if len(rest) % 2 != 0:
+                        return None
+                    pair = []
+                    try:
+                        for i in range(0, len(rest), 2):
+                            evix = int(rest[i])
+                            evpot = float(rest[i+1])
+                            pair.append((evix, evpot))
+                    except Exception:
+                        return None
+                    return tt, pair
+
+                parsed = try_parse(line)
+
+                if parsed is None:
+                    m = None
+                    rb = list(ROLLBACK_PAT.finditer(line))
+                    if rb:
+                        m = rb[-1]
+                    else:
+                        safes = list(TIME_PAT_SAFE.finditer(line))
+                        if safes:
+                            m = safes[-1]
+
+                    if not m:
                         continue
-                    tprev = tt
-                    eval_pot_pair = [(int(ls[i]), float(ls[1 + i])) for i in range(1, len(ls), 2)]
-                    if(samplecount % subsample == 0):
-                        for (evix, evpot) in eval_pot_pair:
-                            data.append((tt, evix, evpot))
-                    samplecount += 1
-    return data
+
+                    repaired = line[m.start():]
+                    parsed = try_parse(repaired)
+                    print(rb,m.start(),repaired)
+                    if parsed is None:
+                        continue
+
+                    tt, pair = parsed
+
+                    if tprev >= 0 and tt < tprev and ROLLBACK_PAT.fullmatch(repaired.split()[0]):
+                        file_data = []
+                        samplecount = 0
+                        tprev = -1.0
+                else:
+                    tt, pair = parsed
+
+                if tprev >= tt:
+                    continue
+
+                if (samplecount % subsample) == 0:
+                    for (evix, evpot) in pair:
+                        file_data.append((tt, evix, evpot))
+                samplecount += 1
+                tprev = tt
+
+        all_data.extend(file_data)
+
+    return all_data
 
 def bar(emat, time_all, nsim, btime, etime, show_intermediate):
     dgtot = 0.0
@@ -124,8 +176,8 @@ def main():
         else:
             f = opts.xvgs.replace("%sim", str(isim))
             files.append(f)
-        data = parse_deltae(files, opts.subsample, isim)
-        
+        data = parse_deltae(files, opts.subsample)
+
         for (t, st, energy) in data:
             se = SimEval(sim=isim, eval=st)
             if se not in energies:
@@ -158,7 +210,7 @@ def main():
         tspan = (i + 1) * twidth
         t0 = tmin + 0.5 * tspan
         t1 = tmin + tspan
-        barres = bar(energies, time_all, opts.nsim, t0, t1, opts.show_intermediate) 
+        barres = bar(energies, time_all, opts.nsim, t0, t1, opts.show_intermediate)
         print("BAR SLIDE %f-%f:" % (t0, t1), barres * gasconstant * opts.temp * kcal_of_kJ)
         results_sliding.append((t0, t1, barres))
 
@@ -171,7 +223,7 @@ def main():
     for i in range(opts.split):
         t0 = tstart + twidth * i
         t1 = tstart + twidth * (i + 1)
-        barres = bar(energies, time_all, opts.nsim, t0, t1, opts.show_intermediate) 
+        barres = bar(energies, time_all, opts.nsim, t0, t1, opts.show_intermediate)
         print("BAR SPLIT %f-%f:" % (t0, t1), barres * gasconstant * opts.temp * kcal_of_kJ)
         results_normalsplit.append((t0, t1, barres))
 
