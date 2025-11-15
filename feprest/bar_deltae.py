@@ -44,8 +44,18 @@ import re
 from math import isclose
 
 def parse_deltae(fs, subsample):
+    # Pattern for normal timestamps (any valid timestamp format)
     TIME_PAT_SAFE = re.compile(r'\d+\.\d{6}(?=\s|$)')
+    # Pattern for rollback detection (lines starting with 100.xxxxxx)
     ROLLBACK_PAT  = re.compile(r'100\.\d{6}(?=\s|$)')
+
+    # Patterns for the two different starting formats:
+    # rep0, rep{nrep-1}: "100.000000    0    {float}    1    {float}\n100."
+    # others:            "100.000000    0    {float}    1    {float}    2    {float}\n100."
+    # We'll use these to detect the first valid line and handle corruption
+    START_PAT_2STATE = re.compile(r'100\.000000\s+0\s+' + floatpat + r'\s+1\s+' + floatpat + r'(?:\s|$)')
+    START_PAT_3STATE = re.compile(r'100\.000000\s+0\s+' + floatpat + r'\s+1\s+' + floatpat + r'\s+2\s+' + floatpat + r'(?:\s|$)')
+
     all_data = []
     for f in fs:
         file_data = []
@@ -69,10 +79,15 @@ def parse_deltae(fs, subsample):
                     if len(rest) % 2 != 0:
                         return None
                     pair = []
+                    seen_states = set()
                     try:
                         for i in range(0, len(rest), 2):
                             evix = int(rest[i])
                             evpot = float(rest[i+1])
+                            # Check for duplicate state indices (indicates corruption)
+                            if evix in seen_states:
+                                return None
+                            seen_states.add(evix)
                             pair.append((evix, evpot))
                     except Exception:
                         return None
@@ -81,30 +96,53 @@ def parse_deltae(fs, subsample):
                 parsed = try_parse(line)
 
                 if parsed is None:
+                    # Try to find where valid data starts in corrupted lines
                     m = None
-                    rb = list(ROLLBACK_PAT.finditer(line))
-                    if rb:
-                        m = rb[-1]
+
+                    # First, check if this might be the first line (starting with 100.000000)
+                    # and extract it using the specific patterns
+                    match_2state = START_PAT_2STATE.search(line)
+                    match_3state = START_PAT_3STATE.search(line)
+
+                    if match_2state or match_3state:
+                        # Use whichever pattern matched
+                        match = match_3state if match_3state else match_2state
+                        repaired = line[match.start():]
+                        parsed = try_parse(repaired)
+                        if parsed is not None:
+                            tt, pair = parsed
+                            # Check for rollback condition (timestamp going backwards to 100.*)
+                            if tprev >= 0 and tt < tprev:
+                                file_data = []
+                                samplecount = 0
+                                tprev = -1.0
+                        else:
+                            continue
                     else:
-                        safes = list(TIME_PAT_SAFE.finditer(line))
-                        if safes:
-                            m = safes[-1]
+                        # Not a start pattern, try general rollback or timestamp detection
+                        rb = list(ROLLBACK_PAT.finditer(line))
+                        if rb:
+                            m = rb[-1]
+                        else:
+                            safes = list(TIME_PAT_SAFE.finditer(line))
+                            if safes:
+                                m = safes[-1]
 
-                    if not m:
-                        continue
+                        if not m:
+                            continue
 
-                    repaired = line[m.start():]
-                    parsed = try_parse(repaired)
-                    print(rb,m.start(),repaired)
-                    if parsed is None:
-                        continue
+                        repaired = line[m.start():]
+                        parsed = try_parse(repaired)
+                        if parsed is None:
+                            continue
 
-                    tt, pair = parsed
+                        tt, pair = parsed
 
-                    if tprev >= 0 and tt < tprev and ROLLBACK_PAT.fullmatch(repaired.split()[0]):
-                        file_data = []
-                        samplecount = 0
-                        tprev = -1.0
+                        # Check for rollback condition
+                        if tprev >= 0 and tt < tprev and ROLLBACK_PAT.fullmatch(repaired.split()[0]):
+                            file_data = []
+                            samplecount = 0
+                            tprev = -1.0
                 else:
                     tt, pair = parsed
 
@@ -237,5 +275,6 @@ def main():
         festderr = numpy.std(vals, ddof=1) / numpy.sqrt(opts.split - 1)
     print("BAR %.2f %.2f" % (femean, festderr))
 
-main()
+if __name__ == "__main__":
+    main()
 

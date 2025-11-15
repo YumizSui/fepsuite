@@ -6,7 +6,16 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "cython==0.29.37",
+    "jupyterlab>=4.4.10",
+    "matplotlib>=3.8.0",
     "mdtraj>=1.10.3",
     "numpy>=2.2.6",
     "pymbar>=4.0.3",
+    "pytest>=9.0.1",
+    "seaborn>=0.13.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.1",
 ]
