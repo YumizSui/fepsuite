@@ -24,7 +24,7 @@ public:
   const std::vector<std::string>& get_residuenames() const { return residuenames; }
   const std::vector<int>& get_resids() const { return resids; }
   const std::vector<std::string>& get_atomnames() const { return atomnames; }
-  const size_t get_numatoms() const { return (size_t)coords.cols(); } 
+  const size_t get_numatoms() const { return (size_t)coords.cols(); }
 
   /**
      Try to read the next structure from the specified PDB.
@@ -39,7 +39,7 @@ private:
 
   std::shared_ptr<std::ifstream> fh;
   char altloc;
-  
+
   Eigen::Matrix3Xd coords;
   Eigen::VectorXd betas;
   Eigen::VectorXd occupancies;

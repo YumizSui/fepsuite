@@ -1,3 +1,5 @@
+#!/bin/zsh
+
 # Run without batch job system
 
 job_prelude() {
@@ -49,10 +51,10 @@ job_mpirun() {
 
     # OpenMPI version
     # For other MPIs, you can skip -npernode $PPN
-    mpirun -npernode $PPN -n $N $@
 
     # Hydra version (FIXME: add per-node)
     # mpirun -n $N $@
+    mpirun -n $N $@
 }
 
 job_singlerun() {

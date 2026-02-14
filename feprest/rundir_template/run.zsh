@@ -7,7 +7,7 @@
 FEPSUITE_ROOT=$HOME/work/fepsuite
 
 # Root GROMACS directory. Note ABFE and FEP/REST currently need different versions of GROMACS
-GROMACS_DIR=$HOME/opt/gromacs-2020-hrexpatch
+GROMACS_DIR=$HOME/opt/gromacs-2020-hrex-gpu
 
 # Specify jobtype, currently abfe or feprest
 JOBTYPE=feprest

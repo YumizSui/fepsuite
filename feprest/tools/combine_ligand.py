@@ -162,8 +162,9 @@ def combine_topology_inline(protein_top: str, ligand_itp: str,
     atomtypes_lines = []
     if ligand_top and os.path.isfile(ligand_top):
         atomtypes_lines = _extract_atomtypes(ligand_top)
-    elif os.path.isfile(ligand_itp):
-        # If no separate TOP file, extract from ITP
+
+    # If TOP file had no atomtypes, try ITP
+    if not atomtypes_lines and os.path.isfile(ligand_itp):
         atomtypes_lines = _extract_atomtypes(ligand_itp)
 
     output_dir = os.path.dirname(os.path.abspath(output_top))

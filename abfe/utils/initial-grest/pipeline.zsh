@@ -69,6 +69,7 @@ mdrun_find_possible_np() {
 # ---- end of subroutines for production run
 
 main() {
+    echo 0,`date` >> $ID/done_step.txt
     if [[ $reqstate = run ]]; then
         #set -e
         #trap '{ echo "Aborting job"; set +e; exit $ERRORCODE }' ZERR
@@ -110,7 +111,7 @@ main() {
             python3 $REST2PY_ROOT/canonicalize_top.py $ID/topol_pp.top $ID/topol_pp_ca.top
             python3 $ABFE_ROOT/tools/initial-grest/rest_region.py --structure $ID/steep.pdb --target-gmx "$LIG_GMX" --receptor "$RECEPTOR_MDTRAJ" --range $GREST_DISTANCE --input $ID/topol_pp_ca.top --output $ID/topol.underlined.top
             TEMP=$(grep "^\\s*ref[_-]t\\s*=" mdp/run.mdp | cut -d '=' -f2 | cut -d ';' -f1 | tr -d ' ')
-            if [[ -z $TEMP ]]; then 
+            if [[ -z $TEMP ]]; then
                 TEMP=300.0
             fi
             python3 $REST2PY_ROOT/grestdih_nohrex.py --temp0 $TEMP --temp $TEMP_HIGH $ID/topol.underlined.top $ID/topol.fep.top
@@ -141,7 +142,7 @@ main() {
         query,6)
             echo "DEPENDS=(5); (( PROCS = 1 ))"
             ;;
-        run,6) 
+        run,6)
             base_structure=$ID/conf_ionized.pdb
             [[ -e $base_structure ]] || base_structure=$ID/conf_ionized.gro
             python3 $ABFE_ROOT/make_ndx.py --structure $base_structure --topology $ID/topol_pp_ca.top --ligand $LIG_GMX --receptor $RECEPTOR_MDTRAJ --output $ID/analysis.ndx
@@ -162,7 +163,7 @@ main() {
             ;;
     esac
     if [[ $reqstate == run ]]; then
-        echo $STEPNO >> $ID/done_step.txt
+        echo $STEPNO,`date` >> $ID/done_step.txt
     fi
 }
 

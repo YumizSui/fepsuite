@@ -439,9 +439,11 @@ class LigandProteinMutationGenerator(DefaultProteinMutationGenerator):
             from ligand_param import use_existing_itp
             self.ligand_info = use_existing_itp(ligand_itp, ligand_gro)
         else:
-            raise ValueError("Either --ligand-sdf or both --ligand-itp and --ligand-gro must be specified")
+            # No ligand specified - still use this class for RNA/DNA handling
+            self.ligand_info = None
 
-        log_with_color(f"Ligand parameterized: {self.ligand_info['ligand_name']}")
+        if self.ligand_info:
+            log_with_color(f"Ligand parameterized: {self.ligand_info['ligand_name']}")
 
     def _strip_non_protein(self, pdb_path: str, output_path: str):
         """Remove HETATM and nucleic acid ATOM lines from PDB, return stripped lines.
@@ -676,8 +678,9 @@ class LigandProteinMutationGenerator(DefaultProteinMutationGenerator):
         check_call_verbose([f"{self.fepsuite}/feprest/fepgen/fepgen"] + f"-A ../{fepdir[0]}/conf.pdb -B ../{fepdir[1]}/conf.pdb -a ../{fepdir[0]}/topol_can.top -b ../{fepdir[1]}/topol_can.top -O fepbase.pdb -o fepbase.top --structureOA fepbase_A.pdb --structureOB fepbase_B.pdb --protein --honor-resnames --generate-restraint CA --disable-cmap-error".split())
         os.chdir(curdir)
 
-        # NEW: Combine ligand with FEP topology/structure
-        self._combine_with_ligand(fepdirname)
+        # NEW: Combine ligand with FEP topology/structure (if ligand present)
+        if self.ligand_info:
+            self._combine_with_ligand(fepdirname)
 
         # Solvate (now with ligand included)
         os.chdir(fepdirname)
@@ -699,7 +702,8 @@ class LigandProteinMutationGenerator(DefaultProteinMutationGenerator):
             other_resids_str = ','.join([str(r) for r in other_resids])
             check_call_verbose([self.python3, f"{self.fepsuite}/feprest/tools/selectres.py"] + f"../{fepdirname}/fepbase.top ../{fepdirname}/fepbase.pdb {m.resid} fepbase.top fepbase.pdb {other_resids_str}".split())
             # Remove ligand from reference topology (reference systems should be protein-only)
-            self._remove_ligand_from_topology("fepbase.top")
+            if self.ligand_info:
+                self._remove_ligand_from_topology("fepbase.top")
             self.solvate_curdir_conf_topology(self.solv_ref)
             self.generate_para_conf([m])
             log_with_color(f"cd ..")
@@ -765,7 +769,19 @@ if __name__ == "__main__":
 
     has_ligand = args.ligand_sdf or (args.ligand_itp and args.ligand_gro)
 
-    if has_ligand:
+    # Check if PDB contains RNA/DNA (requires LigandProteinMutationGenerator for FASPR handling)
+    has_rna_dna = False
+    RNA_RESIDUES = {'A', 'C', 'G', 'U', 'I', 'DA', 'DC', 'DG', 'DT', 'DI', 'DU',
+                    'RA', 'RC', 'RG', 'RU', 'RI', 'ADE', 'CYT', 'GUA', 'URA', 'THY'}
+    with open(args.pdb) as fh:
+        for line in fh:
+            if line.startswith('ATOM'):
+                resname = line[17:20].strip()
+                if resname in RNA_RESIDUES:
+                    has_rna_dna = True
+                    break
+
+    if has_ligand or has_rna_dna:
         generator = LigandProteinMutationGenerator(
             args.pdb, args.gmx, args.python3, args.faspr, args.fepsuite,
             args.ff, args.water_model,
