@@ -8,12 +8,14 @@ import numpy
 import os.path
 import pickle
 import collections
+import tarfile
+import io
 
 SimEval = collections.namedtuple("SimEval", ["sim", "eval"])
 
 # in kJ/mol/K (to fit GROMACSy output)
 gasconstant = 0.008314472
-# in kcal/mol/K 
+# in kcal/mol/K
 gasconstant_kcal = 0.0019872036
 
 
@@ -34,40 +36,147 @@ def parse_args():
     parser.add_argument('--subsample', help="subsample interval", type = int, default = 1)
     parser.add_argument('--split', help="Number of chunks", type = int, default = 10)
     parser.add_argument('--show-intermediate', help="Show intermediate cumsum", action="store_true")
+    parser.add_argument('--equilibration-time', help="Equilibration time to discard (ps). If not specified, uses latter half of simulation.", type = float, default = None)
+    parser.add_argument('--max-time', help="Maximum simulation time (ps). Only samples up to this time will be used.", type = float, default = None)
+    parser.add_argument('--tar-file', help="Path to tar.gz file containing xvg files. If specified, --xvgs should be the path pattern within the tar file (e.g., 'reps/deltae_rep%%sim.xvg')", type = str, default = None)
 
     opts = parser.parse_args()
     return opts
 
 floatpat = r'[+-]?(?:\d+(\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?'
 
-def parse_deltae(fs, subsample, simindex):
-    data = []
-    tprev = -1
-    times = []
+import re
+from math import isclose
+
+def parse_deltae(fs, subsample, max_time=None):
+    # Pattern for normal timestamps (any valid timestamp format)
+    TIME_PAT_SAFE = re.compile(r'\d+\.\d{6}(?=\s|$)')
+    # Pattern for rollback detection (lines starting with 100.xxxxxx)
+    ROLLBACK_PAT  = re.compile(r'100\.\d{6}(?=\s|$)')
+
+    # Patterns for the two different starting formats:
+    # rep0, rep{nrep-1}: "100.000000    0    {float}    1    {float}\n100."
+    # others:            "100.000000    0    {float}    1    {float}    2    {float}\n100."
+    # We'll use these to detect the first valid line and handle corruption
+    START_PAT_2STATE = re.compile(r'100\.000000\s+0\s+' + floatpat + r'\s+1\s+' + floatpat + r'(?:\s|$)')
+    START_PAT_3STATE = re.compile(r'100\.000000\s+0\s+' + floatpat + r'\s+1\s+' + floatpat + r'\s+2\s+' + floatpat + r'(?:\s|$)')
+
+    all_data = []
     for f in fs:
-        with open(f) as fh:
+        file_data = []
+        tprev = -1.0
+        # Support both file paths (str) and file objects
+        if isinstance(f, str):
+            fh = open(f)
+            should_close = True
+        else:
+            fh = f
+            should_close = False
+        try:
             samplecount = 0
-            for l in fh:
-                if len(l) == 0:
+            for raw in fh:
+                if not raw or raw[0] in ['#', '@']:
                     continue
-                if l[-1] != "\n":
-                    # typically broken file
-                    break
-                if l[0] in ['#', '@']:
-                    pass
+                line = raw.rstrip("\n")
+
+                def try_parse(s):
+                    parts = s.split()
+                    if len(parts) < 3:
+                        return None
+                    try:
+                        tt = float(parts[0])
+                    except Exception:
+                        return None
+                    rest = parts[1:]
+                    if len(rest) % 2 != 0:
+                        return None
+                    pair = []
+                    seen_states = set()
+                    try:
+                        for i in range(0, len(rest), 2):
+                            evix = int(rest[i])
+                            evpot = float(rest[i+1])
+                            # Check for duplicate state indices (indicates corruption)
+                            if evix in seen_states:
+                                return None
+                            seen_states.add(evix)
+                            pair.append((evix, evpot))
+                    except Exception:
+                        return None
+                    return tt, pair
+
+                parsed = try_parse(line)
+
+                if parsed is None:
+                    # Try to find where valid data starts in corrupted lines
+                    m = None
+
+                    # First, check if this might be the first line (starting with 100.000000)
+                    # and extract it using the specific patterns
+                    match_2state = START_PAT_2STATE.search(line)
+                    match_3state = START_PAT_3STATE.search(line)
+
+                    if match_2state or match_3state:
+                        # Use whichever pattern matched
+                        match = match_3state if match_3state else match_2state
+                        repaired = line[match.start():]
+                        parsed = try_parse(repaired)
+                        if parsed is not None:
+                            tt, pair = parsed
+                            # Check for rollback condition (timestamp going backwards to 100.*)
+                            if tprev >= 0 and tt < tprev:
+                                file_data = []
+                                samplecount = 0
+                                tprev = -1.0
+                        else:
+                            continue
+                    else:
+                        # Not a start pattern, try general rollback or timestamp detection
+                        rb = list(ROLLBACK_PAT.finditer(line))
+                        if rb:
+                            m = rb[-1]
+                        else:
+                            safes = list(TIME_PAT_SAFE.finditer(line))
+                            if safes:
+                                m = safes[-1]
+
+                        if not m:
+                            continue
+
+                        repaired = line[m.start():]
+                        parsed = try_parse(repaired)
+                        if parsed is None:
+                            continue
+
+                        tt, pair = parsed
+
+                        # Check for rollback condition
+                        if tprev >= 0 and tt < tprev and ROLLBACK_PAT.fullmatch(repaired.split()[0]):
+                            file_data = []
+                            samplecount = 0
+                            tprev = -1.0
                 else:
-                    ls = l.split()
-                    tt = float(ls[0])
-                    if tprev >= tt:
-                        # prevent double counting
-                        continue
-                    tprev = tt
-                    eval_pot_pair = [(int(ls[i]), float(ls[1 + i])) for i in range(1, len(ls), 2)]
-                    if(samplecount % subsample == 0):
-                        for (evix, evpot) in eval_pot_pair:
-                            data.append((tt, evix, evpot))
-                    samplecount += 1
-    return data
+                    tt, pair = parsed
+
+                if tprev >= tt:
+                    continue
+
+                # Filter by max_time if specified
+                if max_time is not None and tt > max_time:
+                    continue
+
+                if (samplecount % subsample) == 0:
+                    for (evix, evpot) in pair:
+                        file_data.append((tt, evix, evpot))
+                samplecount += 1
+                tprev = tt
+        finally:
+            if should_close:
+                fh.close()
+
+        all_data.extend(file_data)
+    print("DEBUG: all_data", len(all_data), all_data[-1])
+    return all_data
 
 def bar(emat, time_all, nsim, btime, etime, show_intermediate):
     dgtot = 0.0
@@ -115,31 +224,91 @@ def main():
     time_all = {}
     beta = 1. / (gasconstant * opts.temp)
 
-    for isim in range(opts.nsim):
-        files = []
-        if opts.minpart is not None:
-            for part in range(opts.minpart, opts.maxpart + 1):
-                f = opts.xvgs.replace("%sim", str(isim)).replace("%part", "%04d"%part)
-                files.append(f)
-        else:
-            f = opts.xvgs.replace("%sim", str(isim))
-            files.append(f)
-        data = parse_deltae(files, opts.subsample, isim)
-        
-        for (t, st, energy) in data:
-            se = SimEval(sim=isim, eval=st)
-            if se not in energies:
-                energies[se] = []
-                time_all[se] = []
-            if len(time_all[se]) > 0 and time_all[se][-1] == t:
-                # dup frame
-                continue
-            energies[se].append(energy)
-            time_all[se].append(t)
+    # Open tar file if specified
+    tar_handle = None
+    if opts.tar_file:
+        if not os.path.exists(opts.tar_file):
+            raise FileNotFoundError(f"Tar file not found: {opts.tar_file}")
+        tar_handle = tarfile.open(opts.tar_file, 'r:gz')
+        print(f"Reading from tar file: {opts.tar_file}", file=sys.stderr)
 
-        nsamples[isim] = len(time_all[SimEval(sim=isim, eval=isim)])
-        print("Finished loading %s with %d points %d frames" % (", ".join(files), len(data), len(time_all[se]))) # time_all[se] shall exist
-        sys.stdout.flush()
+    try:
+        for isim in range(opts.nsim):
+            files = []
+            if opts.tar_file:
+                # Read from tar file
+                if opts.minpart is not None:
+                    for part in range(opts.minpart, opts.maxpart + 1):
+                        tar_path = opts.xvgs.replace("%sim", str(isim)).replace("%part", "%04d" % part)
+                        try:
+                            member = tar_handle.getmember(tar_path)
+                            file_obj = tar_handle.extractfile(member)
+                            if file_obj is not None:
+                                # Wrap in TextIOWrapper for text mode
+                                files.append(io.TextIOWrapper(file_obj, encoding='utf-8'))
+                        except KeyError:
+                            pass
+                else:
+                    tar_path = opts.xvgs.replace("%sim", str(isim))
+                    try:
+                        member = tar_handle.getmember(tar_path)
+                        file_obj = tar_handle.extractfile(member)
+                        if file_obj is not None:
+                            # Wrap in TextIOWrapper for text mode
+                            files.append(io.TextIOWrapper(file_obj, encoding='utf-8'))
+                    except KeyError:
+                        pass
+            else:
+                # Read from regular files
+                if opts.minpart is not None:
+                    for part in range(opts.minpart, opts.maxpart + 1):
+                        f = opts.xvgs.replace("%sim", str(isim)).replace("%part", "%04d"%part)
+                        if os.path.exists(f):
+                            files.append(f)
+                else:
+                    f = opts.xvgs.replace("%sim", str(isim))
+                    if os.path.exists(f):
+                        files.append(f)
+
+            if not files:
+                print(f"Warning: No files found for simulation {isim}", file=sys.stderr)
+                continue
+
+            data = parse_deltae(files, opts.subsample, opts.max_time)
+
+            # Close file objects if they were opened from tar
+            if opts.tar_file:
+                for f in files:
+                    if hasattr(f, 'close'):
+                        f.close()
+
+            for (t, st, energy) in data:
+                # Additional max_time check (redundant but safe)
+                if opts.max_time is not None and t > opts.max_time:
+                    continue
+                se = SimEval(sim=isim, eval=st)
+                if se not in energies:
+                    energies[se] = []
+                    time_all[se] = []
+                if len(time_all[se]) > 0 and time_all[se][-1] == t:
+                    # dup frame
+                    continue
+                energies[se].append(energy)
+                time_all[se].append(t)
+
+            nsamples[isim] = len(time_all[SimEval(sim=isim, eval=isim)])
+            # Format file names for display
+            if opts.tar_file:
+                file_display = opts.xvgs.replace("%sim", str(isim))
+                if opts.minpart is not None:
+                    file_display = file_display.replace("%part", "%04d" % opts.minpart)
+            else:
+                file_display = ", ".join(files)
+            print("Finished loading %s with %d points %d frames" % (file_display, len(data), len(time_all[se]))) # time_all[se] shall exist
+            sys.stdout.flush()
+    finally:
+        if tar_handle:
+            tar_handle.close()
 
     # Since I am rewriting energies[k], just for the safety I don't use "for k in energies"
     for k in list(energies.keys()):
@@ -158,20 +327,30 @@ def main():
         tspan = (i + 1) * twidth
         t0 = tmin + 0.5 * tspan
         t1 = tmin + tspan
-        barres = bar(energies, time_all, opts.nsim, t0, t1, opts.show_intermediate) 
+        barres = bar(energies, time_all, opts.nsim, t0, t1, opts.show_intermediate)
         print("BAR SLIDE %f-%f:" % (t0, t1), barres * gasconstant * opts.temp * kcal_of_kJ)
         results_sliding.append((t0, t1, barres))
 
     pickle.dump(results_sliding, open("%s/results-sliding.pickle" % opts.save_dir, "wb"))
 
-    print("Performing time-split BAR (equipartition of the latter half) [kcal/mol]")
-    tstart = (tmin + tmax) / 2
+    # Determine start time for final analysis
+    if opts.equilibration_time is not None:
+        tstart = opts.equilibration_time
+        if tstart < tmin:
+            print(f"Warning: equilibration_time ({tstart} ps) is before simulation start ({tmin} ps). Using {tmin} ps.", file=sys.stderr)
+            tstart = tmin
+        elif tstart >= tmax:
+            raise ValueError(f"equilibration_time ({tstart} ps) must be less than simulation end ({tmax} ps)")
+        print(f"Performing time-split BAR (equipartition from {tstart:.1f} ps to {tmax:.1f} ps) [kcal/mol]")
+    else:
+        tstart = (tmin + tmax) / 2
+        print(f"Performing time-split BAR (equipartition of the latter half, from {tstart:.1f} ps to {tmax:.1f} ps) [kcal/mol]")
     twidth = (tmax - tstart) / opts.split
     results_normalsplit = []
     for i in range(opts.split):
         t0 = tstart + twidth * i
         t1 = tstart + twidth * (i + 1)
-        barres = bar(energies, time_all, opts.nsim, t0, t1, opts.show_intermediate) 
+        barres = bar(energies, time_all, opts.nsim, t0, t1, opts.show_intermediate)
         print("BAR SPLIT %f-%f:" % (t0, t1), barres * gasconstant * opts.temp * kcal_of_kJ)
         results_normalsplit.append((t0, t1, barres))
 
@@ -185,5 +364,6 @@ def main():
         festderr = numpy.std(vals, ddof=1) / numpy.sqrt(opts.split - 1)
     print("BAR %.2f %.2f" % (femean, festderr))
 
-main()
+if __name__ == "__main__":
+    main()
 

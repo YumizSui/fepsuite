@@ -85,7 +85,7 @@ controller_submit() {
         unset CPU_ONLY_STAGE
         # get necessary resource information
         eval $($PIPELINE_SCRIPT query $STEPNO)
-        if [[ -z $PPM ]]; then 
+        if [[ -z $PPM ]]; then
             echo "Error: pipeline script returned \$PPM as empty"
             exit 1
         fi
@@ -210,7 +210,7 @@ case $(job_get_mode) in
             source $GROMACS_DIR/bin/GMXRC.zsh
 
             # Currently all pipeline uses replica exchange (single precision), so we assume gmx_mpi exists.
-            GMX=${GMX:-$(which gmx_mpi)}
+            GMX=${GMX:-$(which gmx)}
             GMX_MPI=${GMX_MPI:-$(which gmx_mpi)}
         fi
 
@@ -227,7 +227,7 @@ case $(job_get_mode) in
         setopt ERR_EXIT
         set -x
         source $PIPELINE_SCRIPT run $STEPNO
-        echo $STEPNO >> $ID/done_step.txt
+        echo $STEPNO,`date` >> $ID/done_step.txt
         local curtime=$(date +%s)
         echo "Pipeline stage $STEPNO finished in $(( curtime - inittime )) sec."
     ;;
@@ -237,7 +237,7 @@ case $(job_get_mode) in
             echo "Usage: $BASEFILE (subdirectory name) (stages)"
             echo "Example: $BASEFILE A31V all"
             echo "Example: $BASEFILE MYMOL 3 4 5 6"
-            exit 1 
+            exit 1
         fi
         shift ARGS
         source para_conf.zsh
